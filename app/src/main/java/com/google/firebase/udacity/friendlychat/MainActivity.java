@@ -37,6 +37,7 @@ import android.widget.ProgressBar;
 import android.widget.Toast;
 
 import com.firebase.ui.auth.AuthUI;
+import com.google.android.gms.tasks.OnCompleteListener;
 import com.google.android.gms.tasks.OnFailureListener;
 import com.google.android.gms.tasks.OnSuccessListener;
 import com.google.android.gms.tasks.Task;
@@ -47,13 +48,20 @@ import com.google.firebase.database.DataSnapshot;
 import com.google.firebase.database.DatabaseError;
 import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.remoteconfig.FirebaseRemoteConfig;
+import com.google.firebase.remoteconfig.FirebaseRemoteConfigInfo;
+import com.google.firebase.remoteconfig.FirebaseRemoteConfigSettings;
 import com.google.firebase.storage.FirebaseStorage;
 import com.google.firebase.storage.StorageReference;
 import com.google.firebase.storage.UploadTask;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
 
 import retrofit2.http.Url;
 
@@ -65,6 +73,8 @@ public class MainActivity extends AppCompatActivity {
 
     public static final String ANONYMOUS = "anonymous";
     public static final int DEFAULT_MSG_LENGTH_LIMIT = 1000;
+    public static final String FRIENDLY_MSG_LENGTH_KEY = "friendly_msg_length";
+
     private static final int RC_SIGN_IN = 1;
     private static final int RC_PHOTO_PICKER =  2;
 
@@ -84,6 +94,7 @@ public class MainActivity extends AppCompatActivity {
     private FirebaseAuth.AuthStateListener mAuthStateListener;
     private FirebaseStorage mFirebaseStorage;
     private StorageReference mChatPhotosStorageReference;
+    private FirebaseRemoteConfig mFirebaseRemoteConfig;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -96,6 +107,7 @@ public class MainActivity extends AppCompatActivity {
         mFirebaseAuth = FirebaseAuth.getInstance();
         mMessagesDatabaseReference = mFirebaseDatabase.getReference().child("messages");
         mFirebaseStorage = FirebaseStorage.getInstance();
+        mFirebaseRemoteConfig = FirebaseRemoteConfig.getInstance();
 
         // Initialize references to views
         mProgressBar = (ProgressBar) findViewById(R.id.progressBar);
@@ -110,18 +122,9 @@ public class MainActivity extends AppCompatActivity {
         mMessageListView.setAdapter(mMessageAdapter);
         mChatPhotosStorageReference = mFirebaseStorage.getReference().child("chat_photos");
 
-
-
         // Initialize progress bar
         mProgressBar.setVisibility(ProgressBar.INVISIBLE);
 
-        // ImagePickerButton shows an image picker to upload a image for a message
-        mPhotoPickerButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                // TODO: Fire an intent to show an image picker
-            }
-        });
         // ImagePickerButton shows an image picker to upload a image for a message
         mPhotoPickerButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -166,7 +169,6 @@ public class MainActivity extends AppCompatActivity {
                         null);
                 mMessagesDatabaseReference.push().setValue(friendlyMessage);
 
-
                 // Clear input box
                 mMessageEditText.setText("");
             }
@@ -197,6 +199,17 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         };
+
+        FirebaseRemoteConfigSettings configSettings = new FirebaseRemoteConfigSettings.Builder()
+                .setDeveloperModeEnabled(BuildConfig.DEBUG)
+                .build();
+        mFirebaseRemoteConfig.setConfigSettings(configSettings);
+
+        Map<String, Object> defaultConfigMap = new HashMap<>();
+        defaultConfigMap.put(FRIENDLY_MSG_LENGTH_KEY, DEFAULT_MSG_LENGTH_LIMIT);
+        mFirebaseRemoteConfig.setDefaults(defaultConfigMap);
+        fetchConfig();
+
     }
 
     @Override
@@ -251,6 +264,7 @@ public class MainActivity extends AppCompatActivity {
                 //esse last path segment e a alutima parte do uri - content://local_images/goo/allmight - ele via pegar allmight
                 UploadTask uploadTask = photoRef.putFile(selectedImageUri);
                 uploadTask.addOnSuccessListener(this, new OnSuccessListener<UploadTask.TaskSnapshot>() {
+
                     @Override
                     public void onSuccess(UploadTask.TaskSnapshot taskSnapshot) {
                         Log.d("fredmudar", "terminou de fazer o upload agora e mostrar na tela");
@@ -258,38 +272,25 @@ public class MainActivity extends AppCompatActivity {
                         while (!urlTask.isSuccessful());
                         Uri downloadUrl = urlTask.getResult(); // quero fazer o download da foto que fiz o upload
 
-
                         Log.d("fredmudar", "Uri encontrado:  " + downloadUrl.toString());
                         FriendlyMessage friendlyMessage =
                                 new FriendlyMessage(null,mUsername,downloadUrl.toString());
                         mMessagesDatabaseReference.push().setValue(friendlyMessage);
-
-
-
-
                     }
                 });
-
-
             }
-
         }
-
     }
 
     private void onSignedInInitialize(String username){
         mUsername = username;
         atachDatabaseReadListener();
-
-
     }
 
     private void onSignedOutCleanup(){
         mUsername = ANONYMOUS;
         mMessageAdapter.clear();
         detachDatabaseReadListener();
-
-
     }
 
     private void atachDatabaseReadListener(){
@@ -297,12 +298,14 @@ public class MainActivity extends AppCompatActivity {
             mChildEventListener = new ChildEventListener() {
                 @Override
                 public void onChildAdded(@NonNull DataSnapshot dataSnapshot, @Nullable String s) {
-                    FriendlyMessage friendlyMessage = dataSnapshot.getValue(FriendlyMessage.class);
-                    mMessageAdapter.add(friendlyMessage);
+                    //FriendlyMessage friendlyMessage = dataSnapshot.getValue(FriendlyMessage.class);
+                    //mMessageAdapter.add(friendlyMessage);
                 }
 
                 @Override
                 public void onChildChanged(@NonNull DataSnapshot dataSnapshot, @Nullable String s) {
+                    FriendlyMessage friendlyMessage = dataSnapshot.getValue(FriendlyMessage.class);
+                    mMessageAdapter.add(friendlyMessage);
                 }
 
                 @Override
@@ -327,6 +330,49 @@ public class MainActivity extends AppCompatActivity {
             mMessagesDatabaseReference.removeEventListener(mChildEventListener);
             mChildEventListener = null;
         }
+    }
+
+    public void fetchConfig(){
+        long cacheExpiration = 3600;
+        if(mFirebaseRemoteConfig.getInfo().getConfigSettings().isDeveloperModeEnabled())
+            cacheExpiration = 0;
+
+        mFirebaseRemoteConfig.fetch(cacheExpiration)
+                .addOnCompleteListener(this, new OnCompleteListener<Void>() {
+                    @Override
+                    public void onComplete(@NonNull Task<Void> task) {
+                        if (task.isSuccessful()) {
+                            Log.d("fredmudar","deu certo a leitura do cara");
+                            mFirebaseRemoteConfig.activateFetched();
+                            Log.d("fredmudar","resposta aqui:  " + String.valueOf(mFirebaseRemoteConfig.getLong(FRIENDLY_MSG_LENGTH_KEY)));
+                        } else {
+                            Log.d("fredmudar","Error fetching");
+                        }
+
+                        Log.d("fredmudar", "tempo:  " + String.valueOf(mFirebaseRemoteConfig.getInfo().getFetchTimeMillis()));
+                        Log.d("fredmudar", "ultimo status:  " + String.valueOf(mFirebaseRemoteConfig.getInfo().getLastFetchStatus()));
+                        if(mFirebaseRemoteConfig.getInfo().equals(-1)){
+                            Log.d("fredmudar", "ele deu sucesso aqui");
+                        }
+
+                        applyRetrievedLengthLimit();
+                        String welcomeMessage = mFirebaseRemoteConfig.getString("friendly_msg_length");
+                        Log.d("fredmudar","mensagem:  " + welcomeMessage);
+                    }
+                });
+
+
+    }
+
+    private void applyRetrievedLengthLimit(){
+        Long friendly_msg_length = mFirebaseRemoteConfig.getLong(FRIENDLY_MSG_LENGTH_KEY);
+        Log.d("fredmudar", "valor do edittext:  " + friendly_msg_length.toString());
+        mMessageEditText.setFilters(
+                new InputFilter[]{
+                        new InputFilter.LengthFilter(friendly_msg_length.intValue())
+                }
+        );
+        Log.d("fredmudar", "MUDOU O TAMANHO DO EDIT TEXT");
     }
 
 
